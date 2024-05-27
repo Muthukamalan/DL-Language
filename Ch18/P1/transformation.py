@@ -6,12 +6,12 @@ mean = (0.485, 0.456, 0.406)
 std = (0.229, 0.224, 0.225)
 
 
-IMG_RESOLUTION:int = 256 #128
+IMG_RESOLUTION:int = 128 #256
 
 img_trasfroms:transforms.Compose = transforms.Compose([
     transforms.Resize( (IMG_RESOLUTION, IMG_RESOLUTION ),interpolation=transforms.InterpolationMode.NEAREST_EXACT ),
     transforms.ToTensor(),
-    transforms.Normalize(mean=mean,std=std)
+    # transforms.Normalize(mean=mean,std=std)
 ])
 
 

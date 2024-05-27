@@ -57,11 +57,11 @@ class Decoder(torch.nn.Module):
             # (bs, C, H, W)  >> (bs, C//2 , H*2, W*2)
             self.expansion = torch.nn.Sequential(
                 torch.nn.Upsample(scale_factor=2,mode='nearest'),
-                torch.nn.Conv2d(inchannels,inchannels//2,kernel_size=3,padding=1)
+                torch.nn.Conv2d(inchannels,outchannels,kernel_size=1,stride=1)
             )
         elif self.expansion_mode=='transponse':
             # (bs, C, H, W)  >> (bs, C//2 , H*2, W*2)
-            self.expansion = torch.nn.ConvTranspose2d( inchannels, inchannels//2, kernel_size=2, stride=2 )
+            self.expansion = torch.nn.ConvTranspose2d( inchannels, outchannels, kernel_size=2, stride=2 )
             
     def forward(self,x:torch.Tensor, skip:torch.Tensor)->torch.Tensor:
         '''
@@ -80,42 +80,10 @@ class Decoder(torch.nn.Module):
         
 
 
-
-
-class UNet(pl.LightningModule):
-    def __init__(
-            self, 
-            inchannels:int,
-            outchannels:int,
-            expansion_mode:str,
-            contraction_mode:str,
-            channels_list:list[int,int,int,int,int],
-            epoch:int,
-            scheduler_step:int,
-            max_lr:float=1e-3,
-            lr:float=1e-3,
-            loss_fn:str = 'bce',
-            *args: torch.Any, 
-            **kwargs: torch.Any
-        ) -> None:
-        super().__init__(*args, **kwargs)
-
+class UNet(torch.nn.Module):
+    def __init__(self,inchannels,outchannels,expansion_mode,contraction_mode,channels_list:list=[64,128,256,512], *args, **kwargs) -> None:
+        super(UNet,self     ).__init__(*args, **kwargs)
         
-        assert( 
-            (expansion_mode in ['upsample','transponse']) 
-            and  (contraction_mode in ['strided_conv','maxpool'] ) 
-            and  (len(channels_list)==4) 
-        ), "expansion_mode::['upsample','transpose'] and contraction_mode::['strided_conv','maxpool'] and length(channel_list)==5"
-
-        # Utility
-        self.epoch:int=epoch
-        self.lr:float = lr 
-        self.max_lr:float  = max_lr
-        self.epoch:int  = epoch
-        self.scheduler_step:int  = scheduler_step
-
-        self.loss_fn:str = loss_fn
-
         # Model
         self.expansion_mode:str = expansion_mode
         self.contraction_mode:str = contraction_mode
@@ -124,19 +92,16 @@ class UNet(pl.LightningModule):
         self.encoder1:Encoder = Encoder( inchannels, channels_list[0], self.contraction_mode,is_downsample=True)
         self.encoder2:Encoder = Encoder( channels_list[0], channels_list[1], self.contraction_mode,is_downsample=True)
         self.encoder3:Encoder = Encoder( channels_list[1], channels_list[2], self.contraction_mode,is_downsample=True)
-        
-        # Downsample::False
-        self.encoder4:Encoder = Encoder( channels_list[2], channels_list[3], self.contraction_mode,is_downsample=False)
+        self.encoder4:Encoder = Encoder( channels_list[2], channels_list[3], self.contraction_mode,is_downsample=True)
         
         # Decoder
         self.decoder1:Decoder  = Decoder(channels_list[3],channels_list[2],self.expansion_mode)
         self.decoder2:Decoder  = Decoder(channels_list[2], channels_list[1],self.expansion_mode)
         self.decoder3:Decoder  = Decoder(channels_list[1],channels_list[0],expansion_mode=self.expansion_mode)
         
-        # Final CONV
+        # Final conv
         self.final_conv:torch.nn.Conv2d = torch.nn.Conv2d(channels_list[0],outchannels,kernel_size=1)
-
-    def forward(self,x:torch.Tensor, *args: torch.Any, **kwargs: torch.Any) -> torch.Any:
+    def forward(self,x:torch.Tensor):
         '''
             channel_list=[32,64,128,512,1024]
 
@@ -162,7 +127,7 @@ class UNet(pl.LightningModule):
         x,skip1 = self.encoder1(x)
         x,skip2 = self.encoder2(x)
         x,skip3 = self.encoder3(x)
-        x,_ = self.encoder4(x)
+        _,x    = self.encoder4(x)
 
         # Decoder part
         x = self.decoder1(x,skip3)
@@ -170,6 +135,40 @@ class UNet(pl.LightningModule):
         x = self.decoder3(x,skip1)
         return self.final_conv(x)
     
+class LitUNet(pl.LightningModule):
+    def __init__(
+            self, 
+            inchannels:int,
+            outchannels:int,
+            expansion_mode:str,
+            contraction_mode:str,
+            channels_list:list[int,int,int,int,int],
+            max_lr:float=1e-3,
+            lr:float=1e-3,
+            loss_fn:str = 'bce',
+            *args: torch.Any, 
+            **kwargs: torch.Any
+        ) -> None:
+        super().__init__(*args, **kwargs)
+
+        
+        assert( 
+            (expansion_mode in ['upsample','transponse']) 
+            and  (contraction_mode in ['strided_conv','maxpool'] ) 
+            and  (len(channels_list)==4) 
+        ), "expansion_mode::['upsample','transpose'] and contraction_mode::['strided_conv','maxpool'] and length(channel_list)==5"
+
+        # Utility
+        self.lr:float = lr 
+        self.max_lr:float  = max_lr
+        self.loss_fn:str = loss_fn
+
+        # Model
+        self.net = UNet(inchannels=inchannels, outchannels=outchannels, expansion_mode=expansion_mode, contraction_mode=contraction_mode,channels_list=channels_list).to(self.device)
+        
+    def forward(self,x:torch.Tensor, *args: torch.Any, **kwargs: torch.Any) -> torch.Any:
+        return self.net(x)
+        
     def _common_step(self,batch):
         x,y,ohls = batch
         x    = x.to(self.device)
@@ -178,12 +177,14 @@ class UNet(pl.LightningModule):
 
         if self.loss_fn=='dice':
             loss = DiceLoss()(y_pred,ohls) 
+        elif self.loss_fn=='bce':
+            loss = torch.nn.BCEWithLogitsLoss()(y_pred,ohls)
         else:
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(y_pred,ohls)
+            loss = torch.nn.CrossEntropyLoss()(y_pred,ohls)
         return loss
 
     def configure_optimizers(self) ->dict[torch.optim.Optimizer,dict[torch.optim.lr_scheduler.OneCycleLR]]:
-        optimizer = torch.optim.Adam(self.parameters(),lr=self.lr)
+        optimizer = torch.optim.AdamW(self.parameters(),lr=self.lr,eps=1e-9)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer=optimizer,
             max_lr=self.max_lr,
@@ -192,7 +193,7 @@ class UNet(pl.LightningModule):
             pct_start=.3,
             div_factor=10,
             three_phase=True,
-            final_div_factor=100,
+            final_div_factor=10,
             anneal_strategy='linear'
         )
         return {
@@ -215,4 +216,7 @@ class UNet(pl.LightningModule):
         return loss
     
 
-
+if __name__=="__main__":
+    # assert UNet(3,3,'upsample','maxpool')(torch.randn(16,3,256,256)).shape==(16,3,256,256),"model needs re-correct"
+    # print("Model Loaded Properly!")
+    pass

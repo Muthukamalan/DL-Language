@@ -36,7 +36,7 @@ class OxfordPetDataset(torch.utils.data.Dataset):
 class OxfordPetDatamodule(pl.LightningDataModule):
     def __init__(
             self,
-            batch_size:int ,
+            batch_size:int=16 ,
             path=os.path.join(r"C:\Users\muthu\GitHub\DATA 📁"), 
             transforms:None|torchvision.transforms.Compose = None ,
             mask_transforms:None|torchvision.transforms.Compose = None, 
@@ -50,7 +50,7 @@ class OxfordPetDatamodule(pl.LightningDataModule):
         self.transform:None|torchvision.transforms.Compose = transforms
         self.mask_transform:None|torchvision.transforms.Compose = mask_transforms
 
-        self.batch_size:int = 32 
+        self.batch_size:int = batch_size 
 
 
     def setup(self, stage: str=None) -> None:
